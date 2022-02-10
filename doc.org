@@ -1,0 +1,131 @@
+#+STARTUP: showall indent hidestars
+
+Существует несколько вариантов ускорить вычисления за счет низкоуровневого программирования:
+- Вынести вычисление в отдельный процесс, написанный на низкоуровневом языке и обмениваться с ним данными
+  - через Memory mapped files
+  - через socket или pipe
+  - через очередь
+- Писать низкоуровневый код так чтобы он становился частью GO-бинарника.
+  - На языке Си
+  - На языке Си с ассемблерными вставками
+  - На чистом ассемблере с подключением во время линковки
+  - На языке Go-ассемблера
+
+Первый способ выглядит более простым, но череват затратами на межпроцессную коммуникацию, поэтому я начну исследовать с более сложного второго.
+
+Также существует проект https://github.com/minio/c2goasm который позволяет преобразовать ассемблерные .s файлы в Go-ассемблерные. Он показывает, как сишные функции с интрисинками могут быть преобразованы в Go-ассемблер.
+
+* DONE How to get go assembly code my Go-program
+
+Let's start with GoLang helloworld:
+
+#+BEGIN_SRC go
+  // main.go
+  package main
+
+  import (
+      "fmt"
+  )
+
+  func main() {
+      fmt.Println("Hello World!")
+  }
+#+END_SRC
+
+Build it:
+
+#+BEGIN_SRC sh
+  # Generates obj file as main.o
+  go tool compile main.go
+
+  # Generates assembly, and sends it to a new main.asm
+  go tool compile -S main.go > main.asm
+
+  # Specials:
+  GOOS=linux GOARCH=amd64 go tool compile -S main.go > main.asm
+  # or:
+  go build -gcflags -S main.go
+#+END_SRC
+
+Now we have main.asm with go assembly
+
+* How to compile and call C-function from Go
+
+Если сделать import "C", то комментарий, который идет перед ним
+
+#+BEGIN_SRC go
+  package main
+
+  //int pt(){
+  // return 1;
+  //}
+  import "C"
+  import "fmt"
+
+  func main() {
+      fmt.Println(C.pt())
+  }
+#+END_SRC
+
+build:
+
+#+BEGIN_SRC sh
+  env CGO_ENABLED=1 GOOS=linux go build test.go
+  # variant with linking .o file:
+  # CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -o path/to/module.so test.go
+#+END_SRC
+
+* TODO How I can see assembly code for only one my functions
+* TODO How I can wrote assebly functions and call it from GO?
+* TODO How I can call GO-function and use GO-data from my assembly code?
+
+Если в пакете есть какие-либо файлы ~.s~, то ~go build~ укажет
+компилятору создать специальный заголовок с именем ~go_asm.h~, который
+файлы ~.s~ могут затем ~#include~.
+
+Файл содержит символические константы #define для смещений полей
+структуры Go, размеры типов структур Go и большинство объявлений
+констант Go, определенных в текущем пакете. При сборке Go следует
+избегать предположений о компоновке типов Go и вместо этого
+использовать эти константы. Это улучшает читаемость кода сборки и
+сохраняет его устойчивость к изменениям.
+
+Константы имеют вид ~const_name~. Например, учитывая объявление
+
+#+BEGIN_SRC go
+  const bufSize = 1024
+#+END_SRC
+
+ассемблерный код может ссылаться на значение этой константы как
+~const_bufSize~.
+
+Смещения полей имеют вид ~type_field~. Размеры структуры имеют вид
+type__size. Например, рассмотрим следующее определение Go:
+
+#+BEGIN_SRC go
+  type reader struct {
+      buf [bufSize]byte
+      r   int
+  }
+#+END_SRC
+
+Ассемблер может ссылаться на размер этой структуры как на
+~reader__size~, а смещения двух полей как на ~reader_buf~ и
+~reader_r~. Следовательно, если регистр ~R1~ содержит указатель на
+reader, ассемблер может ссылаться на поле ~r~ как ~reader_r(R1)~.
+
+Если любое из этих #define имен неоднозначно (например, структура с
+полем _size), #include "go_asm.h" завершится ошибкой с ошибкой
+"redefinition of macro"
+
+детали в Quick guide to Go's Assembler.
+
+* Notices
+
+  The FUNCDATA and PCDATA directives contain information for use by
+  the garbage collector; they are introduced by the compiler.
+
+* Links
+
+  https://pkg.go.dev/cmd/cgo
+  https://go.dev/doc/asm
