@@ -467,3 +467,21 @@ Logs - и так можно увидеть логи. Чтобы их же уви
 
 и потом идти в графану смотреть метрики на pathfinder-staging
 (latency и остальные метрики)
+
+* Aliases
+
+#+BEGIN_SRC sh
+  alias runpf="(cd /Users/tymurkhrushchov/go/src/github.com/pathfinder.1inch.exchange/cmd/pathfinder; go build . && ./pathfinder)"
+  alias sozrc="source ~/.zshrc"
+  test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
+  export INCH="/Users/tymurkhrushchov/go/src/github.com/pathfinder.1inch.exchange"
+  alias kibana="kubectl -n monitoring port-forward service/kibana-kibana 5601:5601"
+  alias grafana="kubectl -n monitoring port-forward service/loki-grafana 3000:80"
+  alias kpf='kubectl port-forward '
+  alias kl='kubectl logs --tail 100 -f '
+  alias klf='kubectl logs '
+  alias kgp='kubectl get po -o wide '
+  alias k='kubectl '
+  alias ksn='_f(){k get namespace $1 > /dev/null; if [ $? -eq 1 ]; then return $?; fi;  k config set-context $(k config current-context) --namespace=$1; echo "Namespace: $1"};_    f'
+  alias uppfconf='cwd=$(pwd) && cd $INCH/scripts/k8s_new_yaml_generator/ && python3 k8s_yaml_generator.py && cd $INCH/scripts/k8s_yaml_generator/ && python3 k8s_yaml_generator.py && cd $cwd && unset cwd'
+#+END_SRC
