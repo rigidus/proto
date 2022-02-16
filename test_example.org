@@ -1,0 +1,134 @@
+* Cover profile
+
+  #+BEGIN_SRC sh
+    go test /home/rigidus/src/1inch/pathfinder.1inch.exchange/protocols/base/uniswap3/... -test.v -test.run '^\QTestMarket_GetReturn\E$' -test.coverprofile coverprofile.out
+  #+END_SRC
+
+* Bench & CPU with output and analize
+
+  https://golangdocs.com/profiling-in-golang
+
+  Функции формы ~BenchmarkXxx(*testing.B)~ считаются тестами и выполняются командой «go test», когда указан ее флаг -bench.
+
+  #+BEGIN_SRC sh
+    go test /home/rigidus/src/1inch/pathfinder.1inch.exchange/protocols/base/uniswap3/... -test.v -test.bench '^\QBenchmarkMarket_GetReturn\E$' -test.run ^$ -test.cpuprofile cpu.prof
+    go tool pprof cpu.prof
+    :> top5 -cum # Typing help will show all commands available
+
+    # web
+    go tool pprof -http :8080 cpu.proof
+  #+END_SRC
+
+  #+BEGIN_SRC sh
+    go test /home/rigidus/src/1inch/pathfinder.1inch.exchange/protocols/base/uniswap3/... -test.v -test.bench '^\QBenchmarkMarket_GetReturn\E$' -test.run ^$ -test.memprofile mem.prof
+    go tool pprof mem.prof
+    :> top5
+
+    # web
+    go tool pprof -http :8080 mem.out
+  #+END_SRC
+
+  #+BEGIN_SRC sh
+    go test /home/rigidus/src/1inch/pathfinder.1inch.exchange/protocols/base/uniswap3/... -test.v -test.bench '^\QBenchmarkMarket_GetReturn\E$' -test.run ^$ -benchtime=5s -count 5 -benchmem -cpuprofile=cpu.prof -memprofile=mem.prof -trace=trace.prof ./package | tee bench.txt
+    go tool pprof -http :8080 cpu.prof
+    go tool pprof -http :8081 mem.prof
+    go tool trace trace.prof
+
+    go tool pprof $FILENAME.test cpu.out
+    # (pprof) list <func name>
+
+    # go get -u golang.org/x/perf/cmd/benchstat
+    benchstat bench.txt
+    benchcmp
+  #+END_SRC
+
+* Trace
+
+  #+BEGIN_SRC sh
+    top5 -cum
+    go test -run=. -bench=. -benchtime=5s -count 5 -benchmem -cpuprofile=cpu.out -memprofile=mem.out -trace=trace.out ./package | tee bench.txt
+    go tool pprof -http :8080 cpu.out
+    go tool pprof -http :8081 mem.out
+    go tool trace trace.out
+
+    go tool pprof $FILENAME.test cpu.out
+    # (pprof) list <func name>
+
+    # go get -u golang.org/x/perf/cmd/benchstat
+    benchstat bench.txt
+    benchcmp bench1.txt bench1.txt
+    rm cpu.out mem.out trace.out *.test
+  #+END_SRC
+
+* CPU profile
+GOROOT=/usr/lib/go-1.13 #gosetup
+GOPATH=/home/rigidus/go #gosetup
+/usr/lib/go-1.13/bin/go test -c -o /tmp/___TestMarket_GetReturn_in_github_com_1inch_pathfinder_1inch_exchange_v3_protocols_base_uniswap3 github.com/1inch/pathfinder.1inch.exchange/v3/protocols/base/uniswap3 #gosetup
+/usr/lib/go-1.13/bin/go tool test2json -t /tmp/___TestMarket_GetReturn_in_github_com_1inch_pathfinder_1inch_exchange_v3_protocols_base_uniswap3 -test.v -test.run ^\QTestMarket_GetReturn\E$ -test.cpuprofile /home/rigidus/.cache/JetBrains/GoLand2020.2/profiler/pathfinder.1inch.exchange.c190133/uniswap3'10
+=== RUN   TestMarket_GetReturn
+10 0
+100 0
+1000 0
+10000 0
+100000 0
+1000000 0
+10000000 0
+100000000 0
+1000000000 3
+10000000000 34
+100000000000 348
+1000000000000 3488
+10000000000000 34883
+100000000000000 348830
+1000000000000000 3488306
+10000000000000000 34883064
+100000000000000000 348830467
+1000000000000000000 3488287073
+10000000000000000000 34881110318
+100000000000000000000 348635158747
+1000000000000000000000 3468758902464
+10000000000000000000000 30901683961676
+100000000000000000000000 33089967848101
+1000000000000000000000000 33089967854822
+10000000000000000000000000 33089967855415
+--- PASS: TestMarket_GetReturn (0.02s)
+PASS
+
+Process finished with exit code 0
+
+* MemProfile
+
+GOROOT=/usr/lib/go-1.13 #gosetup
+GOPATH=/home/rigidus/go #gosetup
+/usr/lib/go-1.13/bin/go test -c -o /tmp/___TestMarket_GetReturn_in_github_com_1inch_pathfinder_1inch_exchange_v3_protocols_base_uniswap3 github.com/1inch/pathfinder.1inch.exchange/v3/protocols/base/uniswap3 #gosetup
+/usr/lib/go-1.13/bin/go tool test2json -t /tmp/___TestMarket_GetReturn_in_github_com_1inch_pathfinder_1inch_exchange_v3_protocols_base_uniswap3 -test.v -test.run ^\QTestMarket_GetReturn\E$ -test.memprofile /home/rigidus/.cache/JetBrains/GoLand2020.2/profiler/pathfinder.1inch.exchange.c190133/uniswap3'9
+=== RUN   TestMarket_GetReturn
+10 0
+100 0
+1000 0
+10000 0
+100000 0
+1000000 0
+10000000 0
+100000000 0
+1000000000 3
+10000000000 34
+100000000000 348
+1000000000000 3488
+10000000000000 34883
+100000000000000 348830
+1000000000000000 3488306
+10000000000000000 34883064
+100000000000000000 348830467
+1000000000000000000 3488287073
+10000000000000000000 34881110318
+100000000000000000000 348635158747
+1000000000000000000000 3468758902464
+10000000000000000000000 30901683961676
+100000000000000000000000 33089967848101
+1000000000000000000000000 33089967854822
+10000000000000000000000000 33089967855415
+--- PASS: TestMarket_GetReturn (0.01s)
+PASS
+
+Process finished with exit code 0
