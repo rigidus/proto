@@ -1,3 +1,8 @@
+:PROPERTIES:
+:ID:       be5c5c92-4b7a-4bec-a3a6-ded027457127
+:END:
+#+title: GoFFI
+
 #+STARTUP: showall indent hidestars
 
 Существует несколько вариантов ускорить вычисления за счет низкоуровневого программирования:
@@ -15,7 +20,7 @@
 
 Также существует проект https://github.com/minio/c2goasm который позволяет преобразовать ассемблерные .s файлы в Go-ассемблерные. Он показывает, как сишные функции с интрисинками могут быть преобразованы в Go-ассемблер.
 
-* DONE How to get go assembly code my Go-program
+* DONE How to get go assembly code of my Go-program
 
 Let's start with GoLang helloworld:
 
@@ -49,11 +54,13 @@ Build it:
 
 Now we have main.asm with go assembly
 
-* How to compile and call C-function from Go
+* START How to compile and call C-function from Go
 
-Если сделать import "C", то комментарий, который идет перед ним
+** Simple variant
 
-#+BEGIN_SRC go
+Если сделать import "C", то комментарий, который идет перед ним будет скомпилирован как си-код и включен в сборку.
+
+#+BEGIN_SRC go :tangle cgo.go
   package main
 
   //int pt(){
@@ -70,14 +77,1260 @@ Now we have main.asm with go assembly
 build:
 
 #+BEGIN_SRC sh
-  env CGO_ENABLED=1 GOOS=linux go build test.go
+  env CGO_ENABLED=1 GOOS=linux go build cgo.go
   # variant with linking .o file:
   # CGO_ENABLED=1 GOOS=linux go build -buildmode=plugin -o path/to/module.so test.go
 #+END_SRC
 
+** Extended variant
+
+Таким образом можно сделать ~#include~ чтобы прилинковать сишную библиотеку и вызывать её функции. Туда же можно поместить флаги для компиляции.
+
+#+BEGIN_SRC go :tangle ./cgo-examples/main.go :noweb yes
+  package main
+
+  /*
+     #cgo CFLAGS: -I${SRCDIR}/ctestlib
+     #cgo LDFLAGS: -Wl,-rpath,${SRCDIR}/ctestlib
+     #cgo LDFLAGS: -L${SRCDIR}/ctestlib
+     #cgo LDFLAGS: -ltest
+
+     #include <test.h>
+  ,*/
+  import "C"
+  import (
+      "bytes"
+      "fmt"
+      "unsafe"
+  )
+
+  <<go_decl>>
+
+  func main() {
+      <<go_call>>
+  }
+#+END_SRC
+
+Example of Makefile
+
+#+BEGIN_SRC sh
+  .PHONY: all c go run env
+
+  TESTLIBPATH="./ctestlib"
+
+  all: c go run
+
+  env:
+      docker build --tag cgo .
+      docker run --rm -ti -v $(shell pwd):/src cgo
+
+  c:
+      gcc -c -Wall -Werror -fpic -o ${TESTLIBPATH}/test.o \ ${TESTLIBPATH}/test.c
+      gcc -shared -o ${TESTLIBPATH}/libtest.so ${TESTLIBPATH}/test.o
+
+  go:
+      go build -o app *.go
+
+  run:
+      ./app
+#+END_SRC
+
+Сишный код, который станет библиотекой
+
+#+BEGIN_SRC c :tangle ./cgo-examples/ctestlib/test.c :noweb yes
+  #include "test.h"
+
+  <<c_code>>
+#+END_SRC
+
+и h-файл к нему
+
+#+BEGIN_SRC c :tangle ./cgo-examples/ctestlib/test.h :noweb yes
+  #ifndef _TESTLIB_H_
+  #define _TESTLIB_H_
+
+  #include <stdio.h>
+  #include <stdlib.h>
+
+  <<h_code>>
+
+  #endif
+#+END_SRC
+
+*** Sum
+
+Сначала пусть просто функция, которая демонстрирует выполнение вычислений в си-коде:
+
+#+BEGIN_SRC c :noweb-ref h_code
+  int sum(int a, int b);
+#+END_SRC
+
+#+BEGIN_SRC c :noweb-ref c_code
+  int sum(int a, int b) {
+      return a + b;
+  }
+#+END_SRC
+
+#+BEGIN_SRC go :noweb-ref go_call
+  fmt.Println("\nNumbers")
+  a := 1
+  b := 2
+  sum := int(C.sum(C.int(a), C.int(b)))
+  fmt.Print(sum, "\n\n")
+#+END_SRC
+
+*** Get string
+
+Теперь получим константную строку из си-кода
+
+#+BEGIN_SRC c :noweb-ref h_code
+  const char* get_string();
+#+END_SRC
+
+#+BEGIN_SRC c :noweb-ref c_code
+  const char* get_string() {
+      return "string sent from C";
+  }
+#+END_SRC
+
+#+BEGIN_SRC go :noweb-ref go_call
+  fmt.Println("Get string")
+  getString := C.GoString(C.get_string())
+  fmt.Println(getString)
+  stringBytes := C.GoBytes(unsafe.Pointer(C.get_string()), 24)
+  fmt.Println(stringBytes[0:bytes.Index(stringBytes, []byte{0})])
+  fmt.Println()
+#+END_SRC
+
+*** Send string to C
+
+Печать переданной из Go строки в сишном коде
+
+#+BEGIN_SRC c :noweb-ref h_code
+  void print_string(char* a);
+#+END_SRC
+
+#+BEGIN_SRC c :noweb-ref c_code
+  void print_string(char* a) {
+      printf("string sent from Go: %s\n", a);
+  }
+#+END_SRC
+
+#+BEGIN_SRC go :noweb-ref go_call
+  fmt.Println("Send string")
+  str := "lorem ipsum"
+  cStr := C.CString(str)
+  C.print_string(cStr)
+  C.free(unsafe.Pointer(cStr))
+  fmt.Println()
+#+END_SRC
+
+*** Send buffer to C
+
+Печать строки, которая была передана из Go-кода
+
+#+BEGIN_SRC c :noweb-ref h_code
+  void print_buffer(unsigned char *buf, size_t size);
+#+END_SRC
+
+#+BEGIN_SRC c :noweb-ref c_code
+  void print_buffer(unsigned char *buf, size_t size) {
+      for (uint i = 0; i < size; i++) {
+          printf("%X", buf[i]);
+      }
+      printf("\n");
+  }
+#+END_SRC
+
+#+BEGIN_SRC go :noweb-ref go_call
+  fmt.Println("Send byte array")
+  data := []byte{1, 4, 2}
+  cBytes := (*C.uchar)(unsafe.Pointer(&data[0]))
+  cBytesLength := C.size_t(len(data))
+  fmt.Print("bytes: ")
+  C.print_buffer(cBytes, cBytesLength)
+  fmt.Println()
+#+END_SRC
+
+*** Struct
+
+Работа со структурами, объявленными в си-коде
+
+#+BEGIN_SRC c :noweb-ref h_code
+  typedef struct point
+  {
+      int x;
+      int y;
+  } point;
+
+  int point_diff(point p);
+#+END_SRC
+
+#+BEGIN_SRC c :noweb-ref c_code
+  int point_diff(point p) {
+      return p.x - p.y;
+  }
+#+END_SRC
+
+#+BEGIN_SRC go :noweb-ref go_call
+  fmt.Println("Get and pass struct")
+  point := C.struct_point{}
+  point.x = 0
+  point.y = 2
+  fmt.Println(point)
+  fmt.Print(C.point_diff(point), "\n\n")
+#+END_SRC
+
+*** Arbitrary data: unsafe.Pointer to void pointer
+
+Передача void-указателя
+
+#+BEGIN_SRC c :noweb-ref h_code
+  void pass_void_pointer(void *ptr);
+#+END_SRC
+
+#+BEGIN_SRC c :noweb-ref c_code
+  void pass_void_pointer(void *ptr) {
+      printf("%d\n", *((int*)ptr));
+  }
+#+END_SRC
+
+#+BEGIN_SRC go :noweb-ref go_call
+  fmt.Println("Pass void pointer")
+  C.pass_void_pointer(unsafe.Pointer(&point.y))
+  fmt.Println()
+#+END_SRC
+
+*** Enum
+
+#+BEGIN_SRC c :noweb-ref h_code
+  enum status {
+      PENDING,
+      DONE,
+  };
+#+END_SRC
+
+#+BEGIN_SRC go :noweb-ref go_decl
+  type Status int
+
+  const (
+      Pending Status = iota
+      Done
+  )
+#+END_SRC
+
+
+#+BEGIN_SRC go :noweb-ref go_call
+  fmt.Println("Access enum")
+  fmt.Print(C.enum_status(Pending) == C.PENDING, C.PENDING, C.DONE, "\n\n")
+#+END_SRC
+
+*** Callback
+
+Мы хотим вызвать гошный коллбэк ~evenNumberCallback~ из сишного
+кода. Для этого мы будем использовать следующую последовательность
+действий:
+- регистрируем коллбэк в гошной функции ~registerCallback~, она
+  возвращает нам индекс коллбэка
+- вызываем сишную функцию ~generate_numbers~, передавая ей индекс
+  коллбека. Она:
+  - вызывает гошную функцию ~evenNumberCallbackProxy~ (несколько раз)
+    передавая ей номер коллбэка. Она:
+    - получает коллбэк по его номеру, вызывая гошную функцию
+      ~getCallback~, которая возвращает указатель на коллбэк.
+    - вызывает коллбэк по этому указателю и возвращается
+  - возвращается
+- удаляем зарегитированный коллбэк
+
+#+BEGIN_SRC go :noweb-ref go_call
+  fmt.Println("Pass callback")
+  c := registerCallback(evenNumberCallback, nil)
+  C.generate_numbers(5, c)
+  unregisterCallback(c)
+#+END_SRC
+
+Начнем с сишной функции ~generate_numbers~, оставив более простую
+регистрацию и удаление коллбэка на потом. В ней надо объявить
+~evenNumberCallbackProxy~, которая по-видимому станет внешним
+(external) символом, что (по моим догадкам) позволит линкеру
+слинковать этот символ с гошной функцией, и таким образом сделать ее
+доступной для вызова.
+
+#+BEGIN_SRC c :noweb-ref c_code
+  void generate_numbers(uint num, uint callback) {
+      void evenNumberCallbackProxy(uint, int);
+
+      for (uint i = 0; i <= num; i++) {
+          if (i % 2 == 0) {
+              evenNumberCallbackProxy(callback, i);
+          }
+      }
+  }
+#+END_SRC
+
+Также не забыть объявить ~generate_numbers~ в заголовочном файле:
+
+#+BEGIN_SRC c :noweb-ref h_code
+  void generate_numbers(uint num, uint callback);
+#+END_SRC
+
+Теперь нужно написать го-функцию ~evenNumberCallbackProxy~,
+объявив ее символ экспортируемым:
+
+#+NAME: even_number_callback_proxy
+#+BEGIN_SRC go
+  //export evenNumberCallbackProxy
+  func evenNumberCallbackProxy(i C.uint, num int) {
+      c := getCallback(index(i))
+      c.callback.(func(int))(num)
+  }
+#+END_SRC
+
+Эта функция использует неэкспортируемую функцию ~getCallback~, которая
+для потокобезопасности должна использовать мьютекс:
+
+#+NAME: get_сallback
+#+BEGIN_SRC go
+  func getCallback(i index) *callback {
+      mutex.Lock()
+      defer mutex.Unlock()
+      return storage[i].(*callback)
+  }
+#+END_SRC
+
+Так как ей требуется ~storage~ и ~mutex~ мы должны объявить их:
+
+#+NAME: var_storage_mutex
+#+BEGIN_SRC go
+  var (
+      storage = make(store)
+      mutex   sync.Mutex
+  )
+#+END_SRC
+
+Используемый тип ~store~ - это просто хэшмапа, в которой ключи - это
+индексы (=uint8), значения - интерфейсы. Заодно тут же определим
+коллбэк, как структуру, в которой есть указатель на аргумент
+
+#+NAME: type_index_store_callback
+#+BEGIN_SRC go
+  type (
+      index    uint8
+      store    map[index]interface{}
+      callback struct {
+          callback interface{}
+          arg      unsafe.Pointer
+      }
+  )
+#+END_SRC
+
+Теперь можно вернуться к регистрации и удалению коллбэка. Эти функции
+тоже для потокобезопасности используют мьютексы:
+
+#+NAME: register_unregister_callback
+#+BEGIN_SRC go
+  func registerCallback(c interface{}, arg unsafe.Pointer) C.uint {
+      mutex.Lock()
+      i := index(len(storage))
+      storage[i] = &callback{
+          callback: c,
+          arg:      arg,
+      }
+      mutex.Unlock()
+
+      return C.uint(i)
+  }
+
+  func unregisterCallback(i C.uint) {
+      mutex.Lock()
+      delete(storage, index(i))
+      mutex.Unlock()
+  }
+#+END_SRC
+
+Осталось собрать все гошные функции в файл proxy.go
+
+#+BEGIN_SRC go :tangle ./cgo-examples/proxy.go :mkdirp yes :noweb yes
+  package main
+
+  import "C"
+  import (
+      "sync"
+      "unsafe"
+  )
+
+  <<type_index_store_callback>>
+
+  <<var_storage_mutex>>
+
+  <<even_number_callback_proxy>>
+
+  //export userCallbackProxy
+  func userCallbackProxy(i C.uint) {
+      c := getCallback(index(i))
+      c.callback.(func(unsafe.Pointer))(c.arg)
+  }
+
+  <<register_unregister_callback>>
+
+  <<get_сallback>>
+
+#+END_SRC
+
+*** Callback with params
+
+Шаги:
+- начальная иницализация гошной структуры ~user~
+- регистрируем коллбэк, при регистрации передаем указатель на
+  ~user~. Этот указатель сохраняется в коллбеке. Возвращаемое
+  значение - индекс коллбэка - запоминаем.
+- вызываем сишную функцию ~user_action~, передавая ей индекс
+  коллбэка. Она:
+  - вызывает гошную функцию ~userCallbackProxy~ (несколько раз) передавая ей номер коллбэка. Она:
+    - получает коллбэк по его номеру
+    - вызывая коллбек с аргументом, который взят из структуры ~user~, которая получена из структуры коллбэка.
+    - возвращается
+  - возвращается
+- удаляем коллбэк
+- печатаем ~user~
+
+#+NAME: todo
+#+BEGIN_SRC go :noweb-ref go_call
+  user := User{
+      Username: "johndoe",
+  }
+  cWithParams := registerCallback(userCallback, unsafe.Pointer(&user))
+  C.user_action(cWithParams)
+  unregisterCallback(cWithParams)
+  fmt.Println(user)
+#+END_SRC
+
+Начнем с сишной функции ~user_action~.
+
+#+BEGIN_SRC c :noweb-ref c_code
+  void user_action(uint callback) {
+      void userCallbackProxy(uint);
+
+      for (int i = 0; i < 5; i++) {
+          userCallbackProxy(callback);
+      }
+  }
+#+END_SRC
+
+Также не забыть объявить ~user_action~ в заголовочном файле:
+
+#+BEGIN_SRC c :noweb-ref h_code
+  void user_action(uint callback);
+#+END_SRC
+
+~userCallbackProxy~ уже написан в предыдущем разделе и объявлен
+экспортируемым.
+
+#+BEGIN_SRC go :noweb-ref go_decl
+  type User struct {
+      Username string
+      Visits   int
+  }
+
+  func evenNumberCallback(num int) {
+      fmt.Println("odd number: ", num)
+  }
+
+  func userCallback(user unsafe.Pointer) {
+      u := (*User)(unsafe.Pointer(user))
+      u.Visits++
+  }
+#+END_SRC
+
+*** TODO Intrinsics
+
+[TODO:gmm] Посмотреть в какую математику го компилит юник-в2
+
+[[https://www.codeproject.com/Articles/874396/Crunching-Numbers-with-AVX-and-AVX][Crunching Numbers with AVX and AVX2]]
+
+#+BEGIN_SRC c :tangle tmp/hello_avx.c
+  /* compile: gcc -mavx -o hello_avx hello_avx.c */
+  #include <immintrin.h>
+  #include <stdio.h>
+
+  int main() {
+
+      /* Initialize the two argument vectors */
+      __m256 evens = _mm256_set_ps(2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0);
+      __m256 odds = _mm256_set_ps(1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0);
+
+      /* Compute the difference between the two vectors */
+      __m256 result = _mm256_sub_ps(evens, odds);
+
+      /* Display the elements of the result vector */
+      float* f = (float*)&result;
+      printf("%f %f %f %f %f %f %f %f\n",
+             f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+
+      return 0;
+  }
+#+END_SRC
+
+[[https://www.felixcloutier.com/x86/index.html][x86 and amd64 instruction reference]]
+[[https://chryswoods.com/vector_c++/emmintrin.html][chryswoods.com | Part 2: SSE Intrinsics]]
+[[https://assets.ctfassets.net/9pcn2syx7zns/1bexmTsBaXHArazquMviK4/5c1524d460e1173d160fcba93157c3a6/compiler-intrinsics-and-assembly.pdf][Intrinsics]]
+[[https://link.springer.com/content/pdf/bbm%3A978-1-4302-0219-6%2F1.pdf][Using GCC Compilers]]
+[[https://gcc.gnu.org/onlinedocs/gcc/Vector-Extensions.html][Vector Extensions (Using the GNU Compiler Collection (GCC))]]
+[[https://gcc.gnu.org/onlinedocs/gcc/C-Extensions.html#C-Extensions][C Extensions (Using the GNU Compiler Collection (GCC))]]
+[[https://dmalcolm.fedorapeople.org/gcc/2015-08-31/rst-experiment/how-to-use-inline-assembly-language-in-c-code.html][How to Use Inline Assembly Language in C Code — gcc 6 documentation]]
+[[https://www.it.uc3m.es/pbasanta/asng/course_notes/ctut.pdf][The GNU C Programming Tutorial]]
+https://www.cnblogs.com/zyl910/archive/2012/08/27/intrin\_table\_gcc.html
+https://www.youtube.com/watch?v=x9Scb5Mku1g
+[[https://www.linuxjournal.com/content/introduction-gcc-compiler-intrinsics-vector-processing][An Introduction to GCC Compiler Intrinsics in Vector Processing | Linux Journal]]
+
+Other stuff:
+
+[[https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html][Programming Guide :: CUDA Toolkit Documentation]]
+[[https://stackoverflow.blog/2020/07/08/improving-performance-with-simd-intrinsics-in-three-use-cases/][Improving performance with SIMD intrinsics in three use cases - Stack Overflow Blog]]
+[[https://www.codingame.com/playgrounds/283/sse-avx-vectorization/sse-and-avx-usage][SSE and AVX Usage - SSE & AVX Vectorization]]
+[[https://acl.inf.ethz.ch/teaching/fastcode/2020/slides/07-simd-avx.pdf][SIMD extensions, AVX, compiler vectorization]]
+
+*** TODO Assembly
+
+[[https://www.physicsforums.com/insights/an-intro-to-avx-512-assembly-programming/][An Intro to AVX-512 Assembly Programming]]
+[[https://www.cs.uaf.edu/courses/cs441/notes/sse-avx/][SSE & AVX: x86 SIMD]]
+[[https://wiki.osdev.org/Inline_Assembly/Examples][Inline Assembly/Examples - OSDev Wiki]]
+[[https://gcc.gnu.org/onlinedocs/gcc/Using-Assembly-Language-with-C.html#Using-Assembly-Language-with-C][Using Assembly Language with C (Using the GNU Compiler Collection (GCC))]]
+[[https://docs.oracle.com/cd/E36784_01/html/E36859/gntbd.html][AVX Instructions - x86 Assembly Language Reference Manual]]
+[[https://docs.oracle.com/cd/E37838_01/html/E61064/gsesq.html][AVX512 Instructions - x86 Assembly Language Reference Manual]]
+[[http://www.cs.uu.nl/docs/vakken/magr/2017-2018/files/SIMD%20Tutorial.pdf][Practical SIMD Programming]]
+
+[[https://www.agner.org/optimize/optimizing_assembly.pdf][Optimizing subroutines in assembly language. An optimization guide for x86 platforms]]
+
+[[https://cryptologie.net/article/406/simd-instructions-in-go/][SIMD instructions in Go]]
+
+*** Asm for Mul64
+
+Смотрим ассемблер который генерирует Go для умножения 64-разрядных целых:
+
+#+BEGIN_SRC go :tangle ./proto/asmtest/asm.go :noweb yes :mkdir yes
+  // go tool compile -S asm.go > asm.asm
+  package main
+
+  import (
+      "fmt"
+      // "math/bits"
+  )
+
+  func myInput(msg string, p1 *uint64) {
+      fmt.Print(msg)
+      fmt.Scan(p1)
+      fmt.Println()
+  }
+
+  // Mul64 returns the 128-bit product of x and y: (hi, lo) = x * y
+  // with the product bits' upper half returned in hi and the lower
+  // half returned in lo.
+  //
+  // This function's execution time does not depend on the inputs.
+  func Mul64(x, y uint64) (hi, lo uint64) {
+      const mask32 = 1<<32 - 1
+      x0 := x & mask32
+      x1 := x >> 32
+      y0 := y & mask32
+      y1 := y >> 32
+      w0 := x0 * y0
+      t := x1*y0 + w0>>32
+      w1 := t & mask32
+      w2 := t >> 32
+      w1 += x0 * y1
+      hi = x1*y1 + w2 + w1>>32
+      lo = x * y
+      return
+  }
+
+  func myMul(x, y uint64) (uint64, uint64) {
+      var hi, lo uint64
+      hi, lo = Mul64(x, y)
+      return hi, lo
+  }
+
+  func main() {
+      var x, y, hi, lo uint64
+      myInput("Enter X: ", &x)
+      myInput("Enter Y: ", &y)
+      hi, lo = myMul(x, y)
+      fmt.Println(hi, lo)
+  }
+#+END_SRC
+
+*** START Proto
+
+Добавляем -mavx в Makefile
+Добавляем <immintrin.h> в h-файл
+
+#+BEGIN_SRC go :tangle ./proto/main.go :noweb yes
+  package main
+
+  /*
+       #cgo CFLAGS: -I${SRCDIR}/ctestlib
+       #cgo LDFLAGS: -Wl,-rpath,${SRCDIR}/ctestlib
+       #cgo LDFLAGS: -L${SRCDIR}/ctestlib
+       #cgo LDFLAGS: -ltest
+
+       #include <test.h>
+  ,*/
+  import "C"
+  import (
+      "fmt"
+      "unsafe"
+  )
+
+  //go:linkname overflowError runtime.overflowError
+  var overflowError error
+
+  //go:linkname divideError runtime.divideError
+  var divideError error
+
+  // Int is represented as an array of 4 uint64, in little-endian order,
+  // so that Int[3] is the most significant, and Int[0] is the least significant
+  type uint256b [4]uint64
+
+  // NewInt returns a new zero-initialized uint256b
+  func NewUint256b() *uint256b {
+      return &uint256b{}
+  }
+
+  // SetUint64 sets z to the value x
+  func (z *uint256b) SetUint64(x uint64) *uint256b {
+      z[3], z[2], z[1], z[0] = 0, 0, 0, x
+      return z
+  }
+
+  // IsZero returns true if z == 0
+  func (z * uint256b) IsZero() bool {
+      return (z[0] | z[1] | z[2] | z[3]) == 0
+  }
+
+  // Mul64 returns the 128-bit product of x and y: (hi, lo) = x * y
+  // with the product bits' upper half returned in hi and the lower
+  // half returned in lo.
+  //
+  // This function's execution time does not depend on the inputs.
+  func Mul64(x, y uint64) (hi, lo uint64) {
+      const mask32 = 1<<32 - 1
+      x0 := x & mask32
+      x1 := x >> 32
+      y0 := y & mask32
+      y1 := y >> 32
+      w0 := x0 * y0
+      t := x1*y0 + w0>>32
+      w1 := t & mask32
+      w2 := t >> 32
+      w1 += x0 * y1
+      hi = x1*y1 + w2 + w1>>32
+      lo = x * y
+      return
+  }
+
+  // Add64 returns the sum with carry of x, y and carry: sum = x + y + carry.
+  // The carry input must be 0 or 1; otherwise the behavior is undefined.
+  // The carryOut output is guaranteed to be 0 or 1.
+  //
+  // This function's execution time does not depend on the inputs.
+  func Add64(x, y, carry uint64) (sum, carryOut uint64) {
+      sum = x + y + carry
+      // The sum will overflow if both top bits are set (x & y) or if one of them
+      // is (x | y), and a carry from the lower place happened. If such a carry
+      // happens, the top bit will be 1 + 0 + 1 = 0 (&^ sum).
+      carryOut = ((x & y) | ((x | y) &^ sum)) >> 63
+      return
+  }
+
+  // umulHop computes (hi * 2^64 + lo) = z + (x * y)
+  func umulHop(z, x, y uint64) (hi, lo uint64) {
+      hi, lo = Mul64(x, y)
+      lo, carry := Add64(lo, z, 0)
+      hi, _ = Add64(hi, 0, carry)
+      return hi, lo
+  }
+
+  // umulStep computes (hi * 2^64 + lo) = z + (x * y) + carry.
+  func umulStep(z, x, y, carry uint64) (hi, lo uint64) {
+      hi, lo = Mul64(x, y)
+      lo, carry = Add64(lo, carry, 0)
+      hi, _ = Add64(hi, 0, carry)
+      lo, carry = Add64(lo, z, 0)
+      hi, _ = Add64(hi, 0, carry)
+      return hi, lo
+  }
+
+  // Mul sets z to the product x*y
+  func (z *uint256b) Mul(x, y *uint256b) *uint256b {
+      var (
+          res              uint256b
+          carry            uint64
+          res1, res2, res3 uint64
+      )
+
+      carry, res[0] = Mul64(x[0], y[0])
+      carry, res1 = umulHop(carry, x[1], y[0])
+      carry, res2 = umulHop(carry, x[2], y[0])
+      res3 = x[3]*y[0] + carry
+
+      carry, res[1] = umulHop(res1, x[0], y[1])
+      carry, res2 = umulStep(res2, x[1], y[1], carry)
+      res3 = res3 + x[2]*y[1] + carry
+
+      carry, res[2] = umulHop(res2, x[0], y[2])
+      res3 = res3 + x[1]*y[2] + carry
+
+      res[3] = res3 + x[0]*y[3]
+
+      return z.Set(&res)
+  }
+
+  // Set sets z to x and returns z.
+  func (z *uint256b) Set(x *uint256b) *uint256b {
+      ,*z = *x
+      return z
+  }
+
+  // Add sets z to the sum x+y
+  func (z *uint256b) Add(x, y *uint256b) *uint256b {
+      var carry uint64
+      z[0], carry = Add64(x[0], y[0], 0)
+      z[1], carry = Add64(x[1], y[1], carry)
+      z[2], carry = Add64(x[2], y[2], carry)
+      z[3], _ = Add64(x[3], y[3], carry)
+      return z
+  }
+
+  // Sub64 returns the difference of x, y and borrow: diff = x - y - borrow.
+  // The borrow input must be 0 or 1; otherwise the behavior is undefined.
+  // The borrowOut output is guaranteed to be 0 or 1.
+  //
+  // This function's execution time does not depend on the inputs.
+  func Sub64(x, y, borrow uint64) (diff, borrowOut uint64) {
+      diff = x - y - borrow
+      // See Sub32 for the bit logic.
+      borrowOut = ((^x & y) | (^(x ^ y) & diff)) >> 63
+      return
+  }
+
+  // Lt returns true if z < x
+  func (z *uint256b) Lt(x *uint256b) bool {
+      // z < x <=> z - x < 0 i.e. when subtraction overflows.
+      _, carry := Sub64(z[0], x[0], 0)
+      _, carry = Sub64(z[1], x[1], carry)
+      _, carry = Sub64(z[2], x[2], carry)
+      _, carry = Sub64(z[3], x[3], carry)
+      return carry != 0
+  }
+
+  // Gt returns true if z > x
+  func (z *uint256b) Gt(x *uint256b) bool {
+      return x.Lt(z)
+  }
+
+  // Clear sets z to 0
+  func (z *uint256b) Clear() *uint256b {
+      z[3], z[2], z[1], z[0] = 0, 0, 0, 0
+      return z
+  }
+
+  // SetOne sets z to 1
+  func (z *uint256b) SetOne() *uint256b {
+      z[3], z[2], z[1], z[0] = 0, 0, 0, 1
+      return z
+  }
+
+  // Eq returns true if z == x
+  func (z *uint256b) Eq(x *uint256b) bool {
+      return (z[0] == x[0]) && (z[1] == x[1]) && (z[2] == x[2]) && (z[3] == x[3])
+  }
+
+  // IsUint64 reports whether z can be represented as a uint64.
+  func (z *uint256b) IsUint64() bool {
+      return (z[1] | z[2] | z[3]) == 0
+  }
+
+  // Uint64 returns the lower 64-bits of z
+  func (z *uint256b) Uint64() uint64 {
+      return z[0]
+  }
+
+  var len8tab = [256]uint8{
+      0x00, 0x01, 0x02, 0x02, 0x03, 0x03, 0x03, 0x03, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04,
+      0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05,
+      0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
+      0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06,
+      0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+      0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+      0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+      0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+      0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+      0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+      0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+      0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+      0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+      0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+      0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+      0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08,
+  }
+
+  // Len64 returns the minimum number of bits required to represent x; the result is 0 for x == 0.
+  func Len64(x uint64) (n int) {
+      if x >= 1<<32 {
+          x >>= 32
+          n = 32
+      }
+      if x >= 1<<16 {
+          x >>= 16
+          n += 16
+      }
+      if x >= 1<<8 {
+          x >>= 8
+          n += 8
+      }
+      return n + int(len8tab[x])
+  }
+
+  // Div64 returns the quotient and remainder of (hi, lo) divided by y:
+  // quo = (hi, lo)/y, rem = (hi, lo)%y with the dividend bits' upper
+  // half in parameter hi and the lower half in parameter lo.
+  // Div64 panics for y == 0 (division by zero) or y <= hi (quotient overflow).
+  func Div64(hi, lo, y uint64) (quo, rem uint64) {
+      const (
+          two32  = 1 << 32
+          mask32 = two32 - 1
+      )
+      if y == 0 {
+          panic(divideError)
+      }
+      if y <= hi {
+          panic(overflowError)
+      }
+
+      s := uint(LeadingZeros64(y))
+      y <<= s
+
+      yn1 := y >> 32
+      yn0 := y & mask32
+      un32 := (hi) << (s) | (lo) >> (64-s)
+      un10 := lo << s
+      un1 := un10 >> 32
+      un0 := un10 & mask32
+      q1 := un32 / yn1
+      rhat := un32 - q1*yn1
+
+      for q1 >= two32 || q1*yn0 > two32*rhat+un1 {
+          q1--
+          rhat += yn1
+          if rhat >= two32 {
+              break
+          }
+      }
+
+      un21 := un32*two32 + un1 - q1*y
+      q0 := un21 / yn1
+      rhat = un21 - q0*yn1
+
+      for q0 >= two32 || q0*yn0 > two32*rhat+un0 {
+          q0--
+          rhat += yn1
+          if rhat >= two32 {
+              break
+          }
+      }
+
+      return q1*two32 + q0, (un21*two32 + un0 - q0*y) >> s
+  }
+
+  // reciprocal2by1 computes <^d, ^0> / d.
+  func reciprocal2by1(d uint64) uint64 {
+      reciprocal, _ := Div64(^d, ^uint64(0), d)
+      return reciprocal
+  }
+
+  // subMulTo computes x -= y * multiplier.
+  // Requires len(x) >= len(y).
+  func subMulTo(x, y []uint64, multiplier uint64) uint64 {
+
+      var borrow uint64
+      for i := 0; i < len(y); i++ {
+          s, carry1 := Sub64(x[i], borrow, 0)
+          ph, pl := Mul64(y[i], multiplier)
+          t, carry2 := Sub64(s, pl, 0)
+          x[i] = t
+          borrow = ph + carry1 + carry2
+      }
+      return borrow
+  }
+
+  // udivrem2by1 divides <uh, ul> / d and produces both quotient and remainder.
+  // It uses the provided d's reciprocal.
+  // Implementation ported from https://github.com/chfast/intx and is based on
+  // "Improved division by invariant integers", Algorithm 4.
+  func udivrem2by1(uh, ul, d, reciprocal uint64) (quot, rem uint64) {
+      qh, ql := Mul64(reciprocal, uh)
+      ql, carry := Add64(ql, ul, 0)
+      qh, _ = Add64(qh, uh, carry)
+      qh++
+
+      r := ul - qh*d
+
+      if r > ql {
+          qh--
+          r += d
+      }
+
+      if r >= d {
+          qh++
+          r -= d
+      }
+
+      return qh, r
+  }
+
+  // addTo computes x += y.
+  // Requires len(x) >= len(y).
+  func addTo(x, y []uint64) uint64 {
+      var carry uint64
+      for i := 0; i < len(y); i++ {
+          x[i], carry = Add64(x[i], y[i], carry)
+      }
+      return carry
+  }
+
+  // udivremKnuth implements the division of u by normalized multiple word d from the Knuth's division algorithm.
+  // The quotient is stored in provided quot - len(u)-len(d) words.
+  // Updates u to contain the remainder - len(d) words.
+  func udivremKnuth(quot, u, d []uint64) {
+      dh := d[len(d)-1]
+      dl := d[len(d)-2]
+      reciprocal := reciprocal2by1(dh)
+
+      for j := len(u) - len(d) - 1; j >= 0; j-- {
+          u2 := u[j+len(d)]
+          u1 := u[j+len(d)-1]
+          u0 := u[j+len(d)-2]
+
+          var qhat, rhat uint64
+          if u2 >= dh { // Division overflows.
+              qhat = ^uint64(0)
+              // TODO: Add "qhat one to big" adjustment (not needed for correctness, but helps avoiding "add back" case).
+          } else {
+              qhat, rhat = udivrem2by1(u2, u1, dh, reciprocal)
+              ph, pl := Mul64(qhat, dl)
+              if ph > rhat || (ph == rhat && pl > u0) {
+                  qhat--
+                  // TODO: Add "qhat one to big" adjustment (not needed for correctness, but helps avoiding "add back" case).
+              }
+          }
+
+          // Multiply and subtract.
+          borrow := subMulTo(u[j:], d, qhat)
+          u[j+len(d)] = u2 - borrow
+          if u2 < borrow { // Too much subtracted, add back.
+              qhat--
+              u[j+len(d)] += addTo(u[j:], d)
+          }
+
+          quot[j] = qhat // Store quotient digit.
+      }
+  }
+
+  // LeadingZeros64 returns the number of leading zero bits in x; the result is 64 for x == 0.
+  func LeadingZeros64(x uint64) int { return 64 - Len64(x) }
+
+  // udivremBy1 divides u by single normalized word d and produces both quotient and remainder.
+  // The quotient is stored in provided quot.
+  func udivremBy1(quot, u []uint64, d uint64) (rem uint64) {
+      reciprocal := reciprocal2by1(d)
+      rem = u[len(u)-1] // Set the top word as remainder.
+      for j := len(u) - 2; j >= 0; j-- {
+          quot[j], rem = udivrem2by1(rem, u[j], d, reciprocal)
+      }
+      return rem
+  }
+
+  // udivrem divides u by d and produces both quotient and remainder.
+  // The quotient is stored in provided quot - len(u)-len(d)+1 words.
+  // It loosely follows the Knuth's division algorithm (sometimes referenced as "schoolbook" division) using 64-bit words.
+  // See Knuth, Volume 2, section 4.3.1, Algorithm D.
+  func udivrem(quot, u []uint64, d *uint256b) (rem uint256b) {
+      var dLen int
+      for i := len(d) - 1; i >= 0; i-- {
+          if d[i] != 0 {
+              dLen = i + 1
+              break
+          }
+      }
+
+      shift := uint(LeadingZeros64(d[dLen-1]))
+
+      var dnStorage uint256b
+      dn := dnStorage[:dLen]
+      for i := dLen - 1; i > 0; i-- {
+          dn[i] = (d[i] << shift) | (d[i-1] >> (64 - shift))
+      }
+      dn[0] = d[0] << shift
+
+      var uLen int
+      for i := len(u) - 1; i >= 0; i-- {
+          if u[i] != 0 {
+              uLen = i + 1
+              break
+          }
+      }
+
+      var unStorage [9]uint64
+      un := unStorage[:uLen+1]
+      un[uLen] = u[uLen-1] >> (64 - shift)
+      for i := uLen - 1; i > 0; i-- {
+          un[i] = (u[i] << shift) | (u[i-1] >> (64 - shift))
+      }
+      un[0] = u[0] << shift
+
+      // TODO: Skip the highest word of numerator if not significant.
+
+      if dLen == 1 {
+          r := udivremBy1(quot, un, dn[0])
+          rem.SetUint64(r >> shift)
+          return rem
+      }
+
+      udivremKnuth(quot, un, dn)
+
+      for i := 0; i < dLen-1; i++ {
+          rem[i] = (un[i] >> shift) | (un[i+1] << (64 - shift))
+      }
+      rem[dLen-1] = un[dLen-1] >> shift
+
+      return rem
+  }
+
+  // Div sets z to the quotient x/y for returns z.
+  // If y == 0, z is set to 0
+  func (z *uint256b) Div(x, y *uint256b) *uint256b {
+      if y.IsZero() || y.Gt(x) {
+          return z.Clear()
+      }
+      if x.Eq(y) {
+          return z.SetOne()
+      }
+      // Shortcut some cases
+      if x.IsUint64() {
+          return z.SetUint64(x.Uint64() / y.Uint64())
+      }
+
+      // At this point, we know
+      // x/y ; x > y > 0
+
+      var quot uint256b
+      udivrem(quot[:], x[:], y)
+      return z.Set(&quot)
+  }
+
+  func CalcAmountOut(x, y, a, mulv1, mulv2 *uint256b) *uint256b {
+      if x.IsZero() && a.IsZero() {
+          return NewUint256b().SetUint64(0)
+      }
+
+      /*
+       ,*        a*y*997
+       ,*     -------------
+       ,*     x*1000 + a*997
+       ,*/
+      var mulA, mulX uint256b
+      mulA.Mul(a, mulv1)
+      mulX.Mul(x, mulv2)      // vpmuldq // vpmuludq // vpmulld
+      mulX.Add(&mulX, &mulA)	// vpaddq // vpmaxsw
+      mulA.Mul(y, &mulA)      // vpmullq
+      mulA.Div(&mulA, &mulX)
+      return &mulA
+  }
+
+
+
+  func main() {
+      var x *uint256b = NewUint256b().SetUint64(100)
+      var y *uint256b = NewUint256b().SetUint64(200)
+      var amount *uint256b = NewUint256b().SetUint64(400)
+      var mulv1 *uint256b = NewUint256b().SetUint64(500)
+      var mulv2 *uint256b = NewUint256b().SetUint64(600)
+      fmt.Println(CalcAmountOut(x, y, amount, mulv1, mulv2))
+      // fmt.Println(fmt.CalculateGas(fromToken, toToken, amount))
+      fmt.Println("Send byte array")
+      data := []byte{1, 4, 2}
+      cBytes := (*C.uchar)(unsafe.Pointer(&data[0]))
+      cBytesLength := C.size_t(len(data))
+      fmt.Print("bytes: ")
+      C.print_buffer(cBytes, cBytesLength)
+      fmt.Println()
+  }
+#+END_SRC
+
+#+BEGIN_SRC c :tangle ./proto/ctestlib/test.h :noweb yes
+  #include <stdio.h>
+  #include <stdlib.h>
+  #include <immintrin.h>
+
+  // written for clarity, not conciseness
+  #define OSXSAVEFlag (1UL<<27)
+  #define AVXFlag     ((1UL<<28)|OSXSAVEFlag)
+  #define VAESFlag    ((1UL<<25)|AVXFlag|OSXSAVEFlag)
+  #define FMAFlag     ((1UL<<12)|AVXFlag|OSXSAVEFlag)
+  #define CLMULFlag   ((1UL<< 1)|AVXFlag|OSXSAVEFlag)
+
+  #define set_zero(var) for (uint i = 0; i < 31; i++) { var[i] = 0; }
+  typedef unsigned char byte;
+  typedef byte i256[32] __attribute__ ((aligned (512)));
+
+  // void mul256(i256 *x, i256 *y, i256 *r);
+
+  void print_buffer(unsigned char *buf, size_t size);
+#+END_SRC
+
+compile: gcc -c -Wall -Werror -mavx512f -fpic -o ${TESTLIBPATH}/test.o ${TESTLIBPATH}/test.c
+
+#+BEGIN_SRC go :tangle ./proto/ctestlib/test.c :noweb yes
+  // gcc -mavx -C -g -Wa,-a,-ad -S -o test.asm test.c
+  #include "test.h"
+
+  #include <stdlib.h>
+  #include <string.h>
+  #include <math.h>
+
+  int the_mask = 0; // global so the compiler can't be sure what its value is for opt.
+
+  static double frand()
+  {
+      return (double)rand() / (double)RAND_MAX;
+  }
+
+  static void randmat(double *A)
+  {
+      for (int i=0; i < 4; i++)
+          for (int j=0; j < 4; j++)
+              A[4*i+j] = frand();
+  }
+
+  static void randvec(double *x)
+  {
+      for (int i=0; i < 4; i++)
+          x[i] = frand();
+  }
+
+  void vecmatvec_avx(const double* restrict x, const double* restrict A,
+                     const double* restrict y, double* restrict out)
+  {
+      asm volatile ("# avx code begin");  // looking at assembly with gcc -S
+      __m256d yrow = _mm256_loadu_pd(y);
+      __m256d xrow = _mm256_loadu_pd(x);
+
+      __m256d a = _mm256_mul_pd(_mm256_loadu_pd(A), yrow);
+      __m256d b = _mm256_mul_pd(_mm256_loadu_pd(A+4), yrow);
+      __m256d c = _mm256_mul_pd(_mm256_loadu_pd(A+8), yrow);
+      __m256d d = _mm256_mul_pd(_mm256_loadu_pd(A+12), yrow);
+
+      // our task now is to get {sum(a), sum(b), sum(c), sum(d)}
+      // This is tricky because there is no hadd instruction for avx
+
+      // {a[0]+a[1], b[0]+b[1], a[2]+a[3], b[2]+b[3]}
+      __m256d sumab = _mm256_hadd_pd(a, b);
+
+      // {c[0]+c[1], d[0]+d[1], c[2]+c[3], d[2]+d[3]}
+      __m256d sumcd = _mm256_hadd_pd(c, d);
+
+      // {a[0]+a[1], b[0]+b[1], c[2]+c[3], d[2]+d[3]}
+      __m256d blend = _mm256_blend_pd(sumab, sumcd, 0b1100);
+
+      // {a[2]+a[3], b[2]+b[3], c[0]+c[1], d[0]+d[1]}
+      __m256d perm = _mm256_permute2f128_pd(sumab, sumcd, 0x21);
+
+      // {sum(a), sum(b), sum(c), sum(d)}
+      __m256d Ay = _mm256_add_pd(perm, blend);
+
+      // Now we want to take the dotproduct: dot(x, Ay)
+
+      __m256d e = _mm256_mul_pd(Ay, xrow);
+
+      // horizontal sum of e: tricky again.
+      // {e[0]+e[1], e[0]+e[1], e[2]+e[3], e[2]+e[3]}
+      __m256d tmp = _mm256_hadd_pd(e, e);
+
+      // {e[2]+e[3], e[2]+e[3]}
+      __m128d e23 = _mm256_extractf128_pd(tmp, 1);
+      __m128d result = _mm_add_pd(_mm256_castpd256_pd128(tmp), e23);
+
+      _mm_storel_pd(out, result);
+      asm volatile ("# avx code end");
+  }
+
+  static double run_avx(double *x, double *A, double *y, int count)
+  {
+      double result = 0.0;
+      for (int i=0; i < count; i++)
+      {
+          int j = i & the_mask;
+          vecmatvec_avx(x+j, A+j, y+j, &result);
+      }
+      return result;
+  }
+
+  void print_buffer(unsigned char *buf, size_t size) {
+      double Ap[16];
+      double xp[4], yp[4];
+      randmat(Ap);
+      randvec(xp);
+      randvec(yp);
+      static const int muls_per_run = 4096;
+      run_avx(xp, Ap, yp, muls_per_run);
+      // i256 x;
+      // set_zero(x);
+      // x[0] = 2;
+
+      // i256 y;
+      // set_zero(y);
+      // x[0] = 3;
+
+      i256 r;
+      set_zero(r);
+
+      // mul256(&x, &y, &r);
+
+      // u_int64_t hi;
+      // u_int64_t lo;
+      // mult64to128(2, 3, &hi, &lo);
+
+      void* p = &r;
+
+      for (uint i = 0; i < 31; i++) {
+          // printf("%X.", r[i]);
+          printf("%X.", *(unsigned int *)(p+i));
+      }
+      printf("\n");
+
+      // for (uint i = 0; i < size; i++) {
+      //     printf("%X", buf[i]);
+      // }
+      // printf("\n");
+
+      // _mm256_zeroall();
+      // /* Initialize the two argument vectors */
+      // __m256 evens = _mm256_set_ps(2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0);
+      // __m256 odds = _mm256_set_ps(1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0);
+
+      // /* Compute the difference between the two vectors */
+      // __m256 result = _mm256_sub_ps(evens, odds);
+
+      // /* Display the elements of the result vector */
+      // float* f = (float*)&result;
+      // printf("%f %f %f %f %f %f %f %f\n",
+      //     f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+  }
+#+END_SRC
+
 * TODO How I can see assembly code for only one my functions
 * TODO How I can wrote assebly functions and call it from GO?
-* TODO How I can call GO-function and use GO-data from my assembly code?
+* START How I can call GO-function and use GO-data from my assembly code?
 
 Если в пакете есть какие-либо файлы ~.s~, то ~go build~ укажет
 компилятору создать специальный заголовок с именем ~go_asm.h~, который
@@ -129,359 +1382,4 @@ reader, ассемблер может ссылаться на поле ~r~ ка�
 
   https://pkg.go.dev/cmd/cgo
   https://go.dev/doc/asm
-
-* Configuration
-
-config.yaml лежит в корне репозитория.
-
-в нем есть переменная chain_id - установить в 1 чтобы смотреть на
-etherium mainnet.
-
-после этого в ./cmd/pathfinder/ сделать
-
-#+BEGIN_SRC shell
-  go run main.go
-#+END_SRC
-
-или просто
-
-#+BEGIN_SRC shell
-  go build
-#+END_SRC
-
-Создается бинарник и его можно запустить
-
-#+BEGIN_SRC shell
-  ./cmd/pathfinder/pathfinder
-  INFO[0000] Viper using supplied config
-  {"err":"dial tcp 127.0.0.1:6379: connect: connection refused","level":"warning","msg":"redis init fail: program will start without redis","time":"2021-10-11T14:12:44+03:00"}
-  {"level":"warning","msg":"redis not available for SaveExchangesFromRedisToMemory. SaveExchangesFromRedisToMemory waiting when redis will be available","time":"2021-10-11T14:12:45+03:00"}
-  after retry
-  {"level":"info","msg":"running with chain id: 1","time":"2021-10-11T14:12:45+03:00"}
-  ⇨ http server started on [::]:8088
-#+END_SRC
-
-Сейчас в базовом сетапе все данные запрашиваются с ноды, поэтому можно
-запросить из броузера API:
-
-#+BEGIN_SRC html
-  http://localhost:8088/v1.0/quote?deepLevel=2&mainRouteParts=10&parts=50&virtualParts=50&walletAddress=null&fromTokenAddress=0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee&toTokenAddress=0x6b175474e89094c44da98b954eedeac495271d0f&amount=1000000000000000000&gasPrice=73000000000&protocolWhiteList=WETH,UNISWAP_V1,UNISWAP_V2,SUSHI,MOONISWAP,BALANCER,COMPOUND,CURVE,CHAI,OASIS,KYBER,AAVE,IEARN,BANCOR,PMM1,CREAMSWAP,SWERVE,BLACKHOLESWAP,DODO,DODO_V2,VALUELIQUID,SHELL,DEFISWAP,COFIX,SAKESWAP,LUASWAP,MINISWAP,MSTABLE,PMM2,AAVE_LIQUIDATOR,SYNTHETIX,AAVE_V2,ST_ETH,ONE_INCH_LP,ONE_INCH_LP_1_1,ONE_INCH_LP_MIGRATOR,ONE_INCH_LP_MIGRATOR_V1_1,UNISWAP_V2_MIGRATOR,SUSHISWAP_MIGRATOR,LINKSWAP,S_FINANCE,PSM,POWERINDEX,INDEXED_FINANCE,PMM3,XSIGMA,CREAM_LENDING,SMOOTHY_FINANCE,SADDLE,PMM4,KYBER_DMM,BALANCER_V2,UNISWAP_V3,SETH_WRAPPER,CURVE_V2,CONVERGENCE_X,ONE_INCH_LIMIT_ORDER,DFX_FINANCE,FIXED_FEE_SWAP,DXSWAP,CLIPPER,SHIBASWAP,UNIFI,PMMX,PMM5,PSM_PAX,PMM2MM
-#+END_SRC
-
-Этот урл можно выдрать из консоли разработчика прямо с фронтенда.
-
-* Run
-
-Когда pathfinder идет за данными он идет через проксю, у которой есть
-урл, заданный в config.yaml как chain_node.
-
-Эта прокся перебрасывает на внутренние ноды, а внутри уже есть какой-то
-кластер из нод.
-
-* Algo
-
-Хэндлеры, которые обрабатывают запросы к API лежат в
-
-#+BEGIN_SRC sh
-  ./quotes/delivery/http/
-#+END_SRC
-
-Например, есть функция
-
-#+BEGIN_SRC go
-  func (h *Handler) Quote(c echo.Context)
-#+END_SRC
-
-В её начале идут куски от трейсера который сейчас не нужны.
-
-После прихода запроса вызывается фрейморковская функция Bind которая
-парсит все в структуру, потом эта структура отправляется в функцию
-toQuoteParams:
-
-#+BEGIN_SRC go
-  request, err := h.toQuoteParams(quoteReqParams)
-#+END_SRC
-
-там происходят дополнительные проверки, маппинг и она возвращает
-структуру quotesParams. Её сорцы находятся на этом же уровне в файле
-models.go.
-
-Алгоритм рассчета пути лежит в:
-
-#+BEGIN_SRC sh
-  ./application/pathfinder/
-#+END_SRC
-
-там нужна вся папка но самое интересное в файле routes.go где функция,
-которая вызывается из хэндлеров:
-
-#+BEGIN_SRC go
-  func (a *Algo) FindBestRoute
-#+END_SRC
-
-Из нее вызовется функция ~ComputeBestRoutes~, которая там же ниже, где и
-будет все процесситься и формироваться результат. Вокруг этой функции
-конструируется замыкание (cbr), которое запускается один раз, а потом,
-возможно второй. В чем разница между этими запусками? У нас есть
-возможность конструировать путь исключительно через форки uniswap-v2 и
-это (вторая) попытка построить более простой путь. Потом сравнивается
-какой из результатов лучше - это нужно потому что алгоритм местами жадный
-и сложно поддержать и тот и другой flow. В реальности unoswap может
-выиграть только на маленьких amounts (до 1000 долларов), потому что на
-малых суммах важность комиссии выше..
-
-Основные конфигруационный переменные которые
-передаются это:
-- Parts
-- MainRouteParts
-Они отвечают за дробление в алгоритме. 1 - значит путь должен быть
-прямым, никакого дробления.
-
-Все источники беруться из конфига (см. Cfg.Algo.UnoSwap)
-
-Используется прометеус и его пакет VictoriaMetrics. Счетчики апдейтся
-in-memory и Prometeus пулит эти данные.
-
-Обертки над метриками лежат в папке ./metrics
-
-Например в algo.go есть
-
-#+BEGIN_SRC go
-  func UpdateComputeReturnsDuration
-#+END_SRC
-
-и он вызывет из VictoriaMetrics фунцию metrics.GetOrCreateSummaryExt
-
-[TODO:gmm] - интерфейс VictoriaMetrics
-
-toTokenPrice и toTokenData фетчат цену и decimals по адресу
-токена. Конструируется denominator. Если фетчить не получилось то ставим
-какой-то фикс, чтобы выдать хоть какой-то результат. Это иногда бывает с
-новыми токенами.
-
-Нам нужно получить стоимость токена в ETH чтобы понимать что лучше -
-получить больше токена с большей комиссией или наоборот.
-
-** ComputeRoutes
-
-...считает на всех переденных ей путях лучшее возможное разбиение по
-маркетам.
-
-Параметры:
-- parths - это разбиения внутри пути (они отрисовываются внутри блоков в
-  интерфейсе). Пути - это пути с хопами от токена к токену (не более 3х
-  хопов). По дефолту у нас есть 50 возможных разбиений (parths) путей внутри
-  пути. Этот параметр регулирует это кол-во разбиений. Диапазон: 1-100
-- mainRootParts - это параметр разбиения между блоками-путями (более
-  общий) Диапазон: 1-20
-- deepLevel - параметр отвечает за то насколько путь будет
-  длинным. deeplevel=1 значит один токен между меняемымы, deeplevel=2
-  встречается нечасто (WBTC-ETH-USDC-USDT) но является рекомендуемым для
-  API, еще можно deeplevel=3. По deeplevel мы определяем набор
-  domain.TokenPaths которые передаются как параметр в ~computeRoutes~ -
-  example [[USDC-USDC-DAI], [USDT-DAI], [USDT-ETH-DAI]] - 3 пути. (В
-  графане есть метрика Latency by DeepLevel + Parth чтобы наблюдать за
-  этим.)
-- gasPrice - каждый маркет требует сколько-то газа, этот параметр нужен
-  чтобы понять реальную комиссию за использование этого маркета.
-- availableMarkets - массив массивов в каждом из эл-тов которого лежат
-  все допустимые маркеты для каждой из пар параметра path. Они между
-  собой могут пересекатся, поэтому там есть нюансы: ~filterOutUsedMarkets~
-  чтобы не использовать повторяющиеся маркеты
-
-*** a.ComputeDistibution
-
-tokenService кэшируют нам данные по маркетам.
-
-CalculateMarketReturns
-.->getReturns - общая функция считающаяся для всех разбиений на всех
-маркетах.
-
-CalculateMarketEthReturns - формирует эфирный эквивалент, с учетом
-газправса.
-
-Потом рюкзак (см. доку - Dynamic Programming Parts)
-
-На выходе мы получаем singleMarketParths - разбиение внутри блока.
-
-** ComputeUniqRoots
-
-Находим лучшей, находим к нему неконфликтующие маршруты, прикидываем все
-маркеты, которые в этих маршрутах используются, пересчитываем все
-остальные пути без этих маркетов, чтобы догрести еще какое-то кол-во
-неконфликтующих путей. В итоге получаем обычно не больше пяти путей,
-чтобы слить их в мультипуть
-
-** Остаток
-
-прогнать динамимический рюкзак но теперь между бранчами пути.
-
-избегаем пересечения маркетов на путях
-
-
-* Deploy
-
-Я работаю в своей ветке. Чтобы запулить свои изменения на stage, надо
-запушить ветку.
-
-В корне есть 2 папки, ~k8s-new~ и ~k8s~, в них находятся уже
-сгенерированные yaml-файлы нужные чтобы происходил деплой. Их надо менять
-только из папки ~./scripts~ там есть папки ~k8s_new_yaml_generator~ и
-~k8s_yaml_generator~ в них лежат сорцы питоновской кодогенерации,
-которые берут за основу темплейт, который лежит в той же папке и
-конфиг. Потому что слишком много чейнов и вручную это делать утомительно.
-
-Там же лежит arbitrum_protocol_list.yaml в котором все протоколы, которые
-включены. На основе этого генерируются worked deployment файлы и
-поднимаются (или не поднимаются) воркеры. Сгенерированно скидывается в
-~k8s-new~ и ~k8s~ а сам генерирующий скрипт - k8s_yaml_generator.py
-
-В ~k8s-new~ и ~k8s~ есть файл tags.yaml - его надо изменить, чтобы он
-ссылался на гитовские теги в моей ветке, которые должны быть
-развернуты.
-
-Там нельзя использовать слеши. Есть команда, которая берет
-эти теги и вставляет во все деплойменты.
-
-#+BEGIN_SRC sh
-  alias uppfconf='cwd=$(pwd) && cd $INCH/scripts/k8s_new_yaml_generator/ && python3 k8s_yaml_generator.py && cd $INCH/scripts/k8s_yaml_generator/ && python3 k8s_yaml_generator.py && cd $cwd && unset cwd'
-#+END_SRC
-
-Потом этот таг мы определяем и пушим в репу
-
-#+BEGIN_SRC sh
-  git tag <sometag>
-  git push --tags
-#+END_SRC
-
-Потом нужно сходить в github actions, в меню ~Build docker image~ и
-убедиться что билд этого тега собрался.
-
-Затем идем меню Workflows в ~ETH deploy staging~ его выбираем, потом
-справа нажимаем ~Run workflow~, выбираем branch и раним. В ветке код
-спулится, увидит какой указан тег, выберет этот тег и раскатит с тега.
-
-Чтобы посмотреть логи в случае проблем нужно использовать тулзу kconf
-https://github.com/particledecay/kconf/releases/tag/v1.9.0
-
-Ее надо скачать для нужной операционки, внутри будет бинарник.
-
-Sova скидывает два конфига, которые надо добавить через ~kconf add~
-
-После добавления можно делать ~kconf use~ на один из них. Кластер
-~hel~ маленький, там 120 машин, на ~fsn~ - 180.
-
-kubectl если не установлен лучше качать бинарником с оффсайта.
-
-kubectl и kconf лучше положить в ~/bin/ потому что он есть в $PATH
-
-Проверить работают ли доступы можно с помощью:
-
-#+BEGIN_SRC sh
-  kubectl get pods -n shared
-#+END_SRC
-
-Также стоит смотреть в
-https://github.com/1inch/infra-monitoring/blob/master/dev_guide.md
-- там есть необходимые алиасы, которые стоит прописать в ~/.bashrc
-
-После этого достаточно набрать ~graphana~ чтобы получить прокиную графану
-на 3000 порт и зайти на нее через броузер. Логин и пароль к ней лежит в
-https://github.com/1inch/infra-monitoring в REAME.md
-
-На иконке квадратиков (третьей сверху) есть выпадающее меню с пунктом
-~Manage~ - там есть дашборды для pathfinder-а.
-
-Один из интересных - ~Pathfinder Details Staging~. Там можно смотреть
-latency и прочее.
-
-Есть также staging-апп: https://staging-app.1inch.io/#/1/swap/ETH/USDT
-(лучше выбрать в менюшке trade->classic_mode). И запросы через этот
-веб-интерфейс будут выполняться как раз на стейджинге, их можно увидеть в
-метриках в графане. Из этого же интерфейса через консоль разработчика
-можно выдрать нужные запросы.
-
-Полезные команды:
-
-ksn 1inch
-
-kubectl -n 1inch get pods - выдает все поды этого кластера, можно
-сделать | grep staging | grep pathfinder
-
-Так можно получить нужные поды (не те, где redis в названии)
-
-выбрать один, и в нем чтобы просмотреть логи
-
-cubectl logs -n 1inch -f имя_пода
-
-Чтобы зайти в под нужно сделать:
-
-kubectl -n 1inch exec -it имя_пода /bin/sh
-
-Еще одна полезная утилита - Lens -
-https://github.com/lensapp/lens/releases/tag/v4.2.0 - нужен именно этот
-релиз, его нельзя обновлять, иначе будут проблемы.
-
-В нее после старта надо добавить кластеры (кнопка Add Clusters)
-
-Потом можно идти в Workloads->Pods, дропдаун Namespace - выбрать 1inch и
-в поле Searh можно искать pathfinder-что-то-там. Если по нему тыкнуть то
-можно посмотреть некоторые метрики: CPU, Memory, Network,
-Filesystem. Также справа вверху есть кнопочки с иконками, среди них есть
-Logs - и так можно увидеть логи. Чтобы их же увидеть из консоли можно
-сделать
-
-#+BEGIN_SRC sh
-  kgp | grep pathfinder-api-server-staging-v3-0
-#+END_SRC
-
-так можно получить хэш, вместе с ним скопировать и сделать
-
-#+BEGIN_SRC sh
-  kl pathfinder-api-server-staging-v3-0-797b4bcbfc-lmjcf
-#+END_SRC
-
-чтобы получить логи.
-
-Чтобы что-то подебажить можно найти контейнер ubuntu-test, в lens можно
-получить его консоль. Из нее можно обратиться к любому pathfinderu
-используя curl и взяв аргумент с фронта.
-
-Еще внутри куба можно обращаться от пода к поду по его доменному имени,
-которое совпадает с названием деплоймента. Так что можно смодифицировать
-наш запрос в любом редакторе (заменив https на http и порт на 8088)
-
-Мы можем прокинуть себе терминал:
-
-#+BEGIN_SRC sh
-  k exec -it -n 1inch ubuntu-test /bin/bash
-#+END_SRC
-
-и туда кидать этот модифицированный запрос.
-
-Еще можно заинсталлить на этот под ~wrk~ и делать им нагрузку.
-
-#+BEGIN_SRC sh
-  wrk -c 10 -t 10 'сам_курловый_запрос'
-#+END_SRC
-
-и потом идти в графану смотреть метрики на pathfinder-staging
-(latency и остальные метрики)
-
-* Aliases
-
-#+BEGIN_SRC sh
-  alias runpf="(cd /Users/tymurkhrushchov/go/src/github.com/pathfinder.1inch.exchange/cmd/pathfinder; go build . && ./pathfinder)"
-  alias sozrc="source ~/.zshrc"
-  test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
-  export INCH="/Users/tymurkhrushchov/go/src/github.com/pathfinder.1inch.exchange"
-  alias kibana="kubectl -n monitoring port-forward service/kibana-kibana 5601:5601"
-  alias grafana="kubectl -n monitoring port-forward service/loki-grafana 3000:80"
-  alias kpf='kubectl port-forward '
-  alias kl='kubectl logs --tail 100 -f '
-  alias klf='kubectl logs '
-  alias kgp='kubectl get po -o wide '
-  alias k='kubectl '
-  alias ksn='_f(){k get namespace $1 > /dev/null; if [ $? -eq 1 ]; then return $?; fi;  k config set-context $(k config current-context) --namespace=$1; echo "Namespace: $1"};_    f'
-  alias uppfconf='cwd=$(pwd) && cd $INCH/scripts/k8s_new_yaml_generator/ && python3 k8s_yaml_generator.py && cd $INCH/scripts/k8s_yaml_generator/ && python3 k8s_yaml_generator.py && cd $cwd && unset cwd'
-#+END_SRC
+  https://github.com/andreiavrammsd/cgo-examples
