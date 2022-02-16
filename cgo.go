@@ -7,7 +7,5 @@ import "C"
 import "fmt"
 
 func main() {
-	fmt.Println(C.pt())
+    fmt.Println(C.pt())
 }
-
-// env CGO_ENABLED=1 GOOS=linux go build test.go

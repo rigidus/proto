@@ -54,7 +54,7 @@ Build it:
 
 Now we have main.asm with go assembly
 
-* START How to compile and call C-function from Go
+* How to compile and call C-function from Go
 
 ** Simple variant
 
